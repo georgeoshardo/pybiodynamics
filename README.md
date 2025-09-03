@@ -17,6 +17,7 @@ A Python library for modeling and simulating biological dynamic systems with bot
 
 - Unit integration with Pint for model validation
 - Currently models have a graph structure for reactions, but the graph itself is not extensively used. This will be used for system analysis soon hopefully.
+- SBML import 
 
 
 ## Installation
