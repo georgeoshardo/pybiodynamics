@@ -23,14 +23,14 @@ A Python library for modeling and simulating biological dynamic systems with bot
 
 ### From Source
 ```bash
-git clone https://github.com/pybiodynamics/pybiodynamics.git
+git clone https://github.com/georgeoshardo/pybiodynamics.git
 cd pybiodynamics
 pip install -e .[jupyter]
 ```
 
 ### Development Installation
 ```bash
-git clone https://github.com/pybiodynamics/pybiodynamics.git
+git clone https://github.com/georgeoshardo/pybiodynamics.git
 cd pybiodynamics
 pip install -e ".[dev]"
 ```
