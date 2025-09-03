@@ -70,7 +70,7 @@ class GillespieSimulator:
         self.tsteps = None
 
     @staticmethod
-    def _gillespie_engine_py(x0, S, propensity_func, k, max_iter, seed):
+    def _gillespie_engine_py(x0, S, propensity_func, k, max_iter, seed, tmax=None):
         """
         Core Gillespie algorithm engine in pure Python/NumPy.
 
@@ -81,39 +81,73 @@ class GillespieSimulator:
             k (np.ndarray): Rate constants.
             max_iter (int): Number of iterations.
             seed (int): RNG seed; use negative to skip seeding.
+            tmax (float, optional): Maximum simulation time. If provided,
+                uses dynamic array allocation starting with size 1000.
 
         Returns:
             tuple[np.ndarray, np.ndarray, np.ndarray]: A tuple containing:
-                - X (np.ndarray): State history (num_species, max_iter).
-                - T (np.ndarray): Time history (max_iter,).
-                - tsteps (np.ndarray): Time step history (max_iter,).
+                - X (np.ndarray): State history (num_species, actual_iterations).
+                - T (np.ndarray): Time history (actual_iterations,).
+                - tsteps (np.ndarray): Time step history (actual_iterations,).
         """
         # Initialization
         if seed >= 0:
             np.random.seed(seed)
         t = 0.0
         x = x0.copy()
-        T = np.zeros(max_iter)
-        tsteps = np.zeros(max_iter)
-        X = np.zeros((S.shape[0], max_iter))
+        
+        # Dynamic allocation for tmax mode
+        if tmax is not None:
+            current_size = 1000
+            T = np.zeros(current_size)
+            tsteps = np.zeros(current_size)
+            X = np.zeros((S.shape[0], current_size))
+        else:
+            T = np.zeros(max_iter)
+            tsteps = np.zeros(max_iter)
+            X = np.zeros((S.shape[0], max_iter))
 
+        i = 0
         # Simulation loop
-        for i in range(max_iter):
+        while True:
+            # Check termination conditions
+            if tmax is not None:
+                if t >= tmax:
+                    break
+                # Check if we need to resize arrays
+                if i >= current_size:
+                    new_size = current_size * 2
+                    T_new = np.zeros(new_size)
+                    tsteps_new = np.zeros(new_size)
+                    X_new = np.zeros((S.shape[0], new_size))
+                    
+                    T_new[:current_size] = T
+                    tsteps_new[:current_size] = tsteps
+                    X_new[:, :current_size] = X
+                    
+                    T = T_new
+                    tsteps = tsteps_new
+                    X = X_new
+                    current_size = new_size
+            else:
+                if i >= max_iter:
+                    break
+
             # 1. Calculate reaction propensities (rates)
             rates = propensity_func(x, k)
             sum_rates = np.sum(rates)
 
             if sum_rates == 0:  # No more reactions can occur
-                # Fill remaining history with the last state and break
-                for j in range(i, max_iter):
-                    X[:, j] = x
-                T[i:] = t
-                tsteps[i:] = 0  # Or some indicator like np.inf
                 break
 
             # 2. Determine WHEN the next state change occurs (time step `tau`)
             u = np.random.random()
             tau = -np.log(u) / sum_rates
+            
+            # Check if next step would exceed tmax
+            if tmax is not None and t + tau > tmax:
+                break
+                
             t += tau
             T[i] = t
             tsteps[i] = tau
@@ -130,8 +164,11 @@ class GillespieSimulator:
             # 4. Update the state
             x += S[:, reaction_index]
             X[:, i] = x
+            
+            i += 1
 
-        return X, T, tsteps
+        # Return trimmed arrays with actual data
+        return X[:, :i], T[:i], tsteps[:i]
 
     @staticmethod
     @njit(fastmath=True, cache=True)
@@ -197,7 +234,7 @@ class GillespieSimulator:
 
         return X, T, tsteps
 
-    def run(self, max_iter=100_000, use_numba=True, seed=-1):
+    def run(self, max_iter=100_000, use_numba=True, seed=-1, tmax=None):
         """
         Run the Gillespie simulation.
 
@@ -207,14 +244,21 @@ class GillespieSimulator:
             max_iter (int): The number of iterations to simulate.
             use_numba (bool): Whether to use the Numba-optimized engine.
             seed (int): RNG seed; pass a non-negative integer for reproducibility.
+            tmax (float, optional): Maximum simulation time. If provided,
+                the simulation will stop when this time is reached, using
+                dynamic array allocation starting with size 1000.
         """
+        if tmax is not None and use_numba:
+            # For tmax mode, we need to use Python engine due to dynamic allocation
+            use_numba = False
+            
         if use_numba:
             self.X, self.T, self.tsteps = self._gillespie_engine_numba(
                 self.x0, self.S, self.propensity_func, self.k, max_iter, seed
             )
         else:
             self.X, self.T, self.tsteps = self._gillespie_engine_py(
-                self.x0, self.S, self.propensity_func, self.k, max_iter, seed
+                self.x0, self.S, self.propensity_func, self.k, max_iter, seed, tmax
             )
 
     def get_stats(self):
@@ -342,7 +386,8 @@ def create_gillespie_from_system_model(system_model) -> dict:
 
 
 def run_gillespie_simulation(system_model, max_iter: int = 100_000, 
-                           use_numba: bool = True, seed: int = -1, plot: bool = True):
+                           use_numba: bool = True, seed: int = -1, plot: bool = True,
+                           tmax: float = None):
     """
     Run a Gillespie simulation using a SystemModel.
     
@@ -352,6 +397,9 @@ def run_gillespie_simulation(system_model, max_iter: int = 100_000,
         use_numba (bool): Whether to use Numba optimization
         seed (int): Random seed for reproducibility
         plot (bool): Whether to plot the results
+        tmax (float, optional): Maximum simulation time. If provided,
+            the simulation will stop when this time is reached, using
+            dynamic array allocation starting with size 1000.
         
     Returns:
         dict: Results containing the simulator and statistics
@@ -372,9 +420,12 @@ def run_gillespie_simulation(system_model, max_iter: int = 100_000,
     )
         
     # Run the simulation
-    print(f"Running Gillespie simulation for {max_iter:,} iterations...")
+    if tmax is not None:
+        print(f"Running Gillespie simulation until t = {tmax}...")
+    else:
+        print(f"Running Gillespie simulation for {max_iter:,} iterations...")
     start_time = time.time()
-    simulator.run(max_iter=max_iter, use_numba=use_numba, seed=seed)
+    simulator.run(max_iter=max_iter, use_numba=use_numba, seed=seed, tmax=tmax)
     end_time = time.time()
     
     elapsed_ms = (end_time - start_time) * 1000
